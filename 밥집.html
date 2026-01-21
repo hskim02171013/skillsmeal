@@ -1,0 +1,330 @@
+import React, { useState, useEffect } from 'react';
+import { Coffee, Sun, Moon, RotateCw } from 'lucide-react';
+
+export default function MealRoulette() {
+  const [spinning, setSpinning] = useState({ breakfast: false, lunch: false, dinner: false });
+  const [results, setResults] = useState({ breakfast: '', lunch: '', dinner: '' });
+  const [history, setHistory] = useState({});
+  const [currentDate, setCurrentDate] = useState(new Date());
+  const [isRunning, setIsRunning] = useState(false);
+
+  const restaurants = {
+    breakfast: ['마미쿡', '샌토락'],
+    lunch_weekday: ['한솥'],
+    lunch_weekend: ['꼬짬', '밀리네'],
+    dinner_weekday: ['꼬짬', '밀리네', '고향순대'],
+    dinner_weekend: ['꼬짬', '밀리네', '고향순대', '마미쿡']
+  };
+
+  useEffect(() => {
+    loadHistory();
+  }, []);
+
+  const loadHistory = async () => {
+    try {
+      const data = await window.storage.get('meal_history', false);
+      if (data?.value) {
+        const parsed = JSON.parse(data.value);
+        cleanOldHistory(parsed);
+      }
+    } catch (error) {
+      console.log('기록 없음');
+    }
+  };
+
+  const cleanOldHistory = (hist) => {
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    
+    const cleaned = {};
+    Object.keys(hist).forEach(key => {
+      const recordDate = new Date(key);
+      if (recordDate >= thirtyDaysAgo) {
+        cleaned[key] = hist[key];
+      }
+    });
+    
+    setHistory(cleaned);
+    saveHistory(cleaned);
+  };
+
+  const saveHistory = async (hist) => {
+    try {
+      await window.storage.set('meal_history', JSON.stringify(hist), false);
+    } catch (error) {
+      console.error('저장 실패:', error);
+    }
+  };
+
+  const getDateKey = (date) => {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  };
+
+  const isWeekend = (date) => {
+    const day = date.getDay();
+    return day === 0 || day === 6;
+  };
+
+  const isSunday = (date) => {
+    return date.getDay() === 0;
+  };
+
+  const getAvailableRestaurants = (type, date) => {
+    const weekend = isWeekend(date);
+    
+    if (type === 'breakfast') {
+      return restaurants.breakfast;
+    } else if (type === 'lunch') {
+      return weekend ? restaurants.lunch_weekend : restaurants.lunch_weekday;
+    } else if (type === 'dinner') {
+      if (weekend) {
+        return isSunday(date) ? restaurants.dinner_weekend : restaurants.dinner_weekend.filter(r => r !== '마미쿡');
+      }
+      return restaurants.dinner_weekday;
+    }
+    return [];
+  };
+
+  const getNextRestaurant = (type, date) => {
+    const dateKey = getDateKey(date);
+    const available = getAvailableRestaurants(type, date);
+    
+    if (available.length === 0) return null;
+    if (available.length === 1) return available[0];
+
+    const lastEaten = history[dateKey]?.[type];
+    const previousDate = new Date(date);
+    previousDate.setDate(previousDate.getDate() - 1);
+    const prevDateKey = getDateKey(previousDate);
+    const prevEaten = history[prevDateKey]?.[type];
+
+    let candidates = [...available];
+    
+    if (lastEaten && candidates.includes(lastEaten)) {
+      candidates = candidates.filter(r => r !== lastEaten);
+    }
+    
+    if (candidates.length === 0) {
+      candidates = [...available];
+    }
+
+    if (prevEaten && candidates.includes(prevEaten) && candidates.length > 1) {
+      candidates = candidates.filter(r => r !== prevEaten);
+    }
+
+    const counts = {};
+    Object.keys(history).forEach(key => {
+      const record = history[key][type];
+      if (record && available.includes(record)) {
+        counts[record] = (counts[record] || 0) + 1;
+      }
+    });
+
+    const minCount = Math.min(...candidates.map(r => counts[r] || 0));
+    const leastEaten = candidates.filter(r => (counts[r] || 0) === minCount);
+
+    const randomIndex = Math.floor(Math.random() * leastEaten.length);
+    return leastEaten[randomIndex];
+  };
+
+  const spinSingleRoulette = (mealType) => {
+    return new Promise((resolve) => {
+      setSpinning(prev => ({ ...prev, [mealType]: true }));
+      
+      const finalResult = getNextRestaurant(mealType, currentDate);
+      const available = getAvailableRestaurants(mealType, currentDate);
+
+      let spinCount = 0;
+      const maxSpins = 20;
+      
+      const interval = setInterval(() => {
+        const randomRestaurant = available[Math.floor(Math.random() * available.length)];
+        setResults(prev => ({ ...prev, [mealType]: randomRestaurant }));
+        spinCount++;
+
+        if (spinCount >= maxSpins) {
+          clearInterval(interval);
+          setTimeout(() => {
+            setResults(prev => ({ ...prev, [mealType]: finalResult }));
+            setSpinning(prev => ({ ...prev, [mealType]: false }));
+            saveResult(mealType, finalResult);
+            resolve();
+          }, 300);
+        }
+      }, 100);
+    });
+  };
+
+  const spinAllRoulettes = async () => {
+    if (isRunning) return;
+    
+    setIsRunning(true);
+    setResults({ breakfast: '', lunch: '', dinner: '' });
+    
+    await spinSingleRoulette('breakfast');
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    await spinSingleRoulette('lunch');
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    await spinSingleRoulette('dinner');
+    
+    setIsRunning(false);
+  };
+
+  const saveResult = (mealType, restaurant) => {
+    const dateKey = getDateKey(currentDate);
+    const newHistory = {
+      ...history,
+      [dateKey]: {
+        ...history[dateKey],
+        [mealType]: restaurant
+      }
+    };
+    setHistory(newHistory);
+    saveHistory(newHistory);
+  };
+
+  const getTodayResult = (mealType) => {
+    const dateKey = getDateKey(currentDate);
+    return history[dateKey]?.[mealType];
+  };
+
+  const mealConfig = {
+    breakfast: {
+      name: '아침',
+      icon: <Coffee className="w-8 h-8" />,
+      color: 'from-orange-400 to-yellow-400',
+      bgColor: 'from-orange-50 to-yellow-50',
+      borderColor: 'border-orange-400'
+    },
+    lunch: {
+      name: '점심',
+      icon: <Sun className="w-8 h-8" />,
+      color: 'from-green-400 to-teal-400',
+      bgColor: 'from-green-50 to-teal-50',
+      borderColor: 'border-green-400'
+    },
+    dinner: {
+      name: '저녁',
+      icon: <Moon className="w-8 h-8" />,
+      color: 'from-purple-400 to-indigo-400',
+      bgColor: 'from-purple-50 to-indigo-50',
+      borderColor: 'border-purple-400'
+    }
+  };
+
+  const RouletteBox = ({ mealType }) => {
+    const config = mealConfig[mealType];
+    const todayResult = getTodayResult(mealType);
+    const isSpinning = spinning[mealType];
+    const result = results[mealType];
+
+    return (
+      <div className="flex flex-col items-center">
+        <div className={`flex items-center justify-center gap-2 mb-4 text-white px-6 py-3 rounded-2xl bg-gradient-to-r ${config.color}`}>
+          {config.icon}
+          <h2 className="text-2xl font-bold">{config.name}</h2>
+        </div>
+
+        <div className={`w-64 h-64 bg-gradient-to-br ${config.bgColor} rounded-3xl border-8 ${config.borderColor} relative overflow-hidden flex items-center justify-center shadow-2xl`}>
+          <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white to-transparent opacity-20 animate-pulse"></div>
+          
+          <div className="relative z-10 text-center">
+            <div className="text-6xl font-black" style={{
+              animation: isSpinning ? 'slideUp 0.1s ease-in-out infinite' : 'none'
+            }}>
+              {result || '?'}
+            </div>
+            {todayResult && !isSpinning && !result && (
+              <div className="text-sm text-gray-600 mt-3 font-medium">
+                오늘: {todayResult}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-purple-100 via-pink-100 to-orange-100 p-8">
+      <div className="max-w-7xl mx-auto">
+        <h1 className="text-6xl font-bold text-center mb-12 text-gray-800">
+          🍚 밥집 룰렛
+        </h1>
+
+        <div className="bg-white rounded-3xl shadow-2xl p-12 mb-8">
+          <div className="flex justify-center gap-12 mb-12">
+            <RouletteBox mealType="breakfast" />
+            <RouletteBox mealType="lunch" />
+            <RouletteBox mealType="dinner" />
+          </div>
+
+          <div className="flex justify-center">
+            <button
+              onClick={spinAllRoulettes}
+              disabled={isRunning}
+              className={`px-12 py-5 rounded-3xl font-bold text-2xl transition-all flex items-center justify-center gap-3 ${
+                isRunning
+                  ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                  : 'bg-gradient-to-r from-purple-500 via-pink-500 to-orange-500 text-white hover:shadow-2xl hover:scale-105 active:scale-95'
+              }`}
+            >
+              <RotateCw className={`w-8 h-8 ${isRunning ? 'animate-spin' : ''}`} />
+              {isRunning ? '룰렛 돌리는 중...' : '오늘의 밥집 추천받기'}
+            </button>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-2xl shadow-xl p-6">
+          <h2 className="text-2xl font-bold mb-4 text-gray-800">📋 최근 7일 기록</h2>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b-2 border-gray-200">
+                  <th className="text-left p-3 font-bold text-gray-700">날짜</th>
+                  <th className="text-center p-3 font-bold text-orange-600">아침</th>
+                  <th className="text-center p-3 font-bold text-green-600">점심</th>
+                  <th className="text-center p-3 font-bold text-purple-600">저녁</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...Array(7)].map((_, i) => {
+                  const date = new Date(currentDate);
+                  date.setDate(date.getDate() - i);
+                  const dateKey = getDateKey(date);
+                  const dayRecord = history[dateKey] || {};
+                  
+                  return (
+                    <tr key={i} className="border-b border-gray-100 hover:bg-gray-50">
+                      <td className="p-3 text-gray-700 font-medium">
+                        {date.getMonth() + 1}/{date.getDate()} ({['일', '월', '화', '수', '목', '금', '토'][date.getDay()]})
+                      </td>
+                      <td className="p-3 text-center text-orange-600 font-medium">{dayRecord.breakfast || '-'}</td>
+                      <td className="p-3 text-center text-green-600 font-medium">{dayRecord.lunch || '-'}</td>
+                      <td className="p-3 text-center text-purple-600 font-medium">{dayRecord.dinner || '-'}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <style>{`
+        @keyframes slideUp {
+          from {
+            transform: translateY(20px);
+            opacity: 0;
+          }
+          to {
+            transform: translateY(0);
+            opacity: 1;
+          }
+        }
+      `}</style>
+    </div>
+  );
+}
